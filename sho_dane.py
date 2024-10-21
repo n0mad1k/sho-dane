@@ -241,7 +241,7 @@ def main():
     parser.add_argument('-s', '--single-target', help='Specify a single domain or IP address for lookup')
     parser.add_argument('-H', '--host', action='store_true', help='Perform Shodan host lookups for IP addresses')
     parser.add_argument('-D', '--dns', action='store_true', help='Perform DNS lookups for domains')
-    parser.add_argument('--help-me-im-poor', action='store_true', help='Open Firefox tabs with Shodan queries for each target without using the API')
+    parser.add_argument('-b','--help-me-im-poor', action='store_true', help='Open Firefox tabs with Shodan queries for each target without using the API')
     parser.add_argument('-o', '--output', help='Output directory to save the results', default='shodan_results')
     parser.add_argument('--debug', action='store_true', help='Enable debug messages for troubleshooting')
 
