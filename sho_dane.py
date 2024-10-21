@@ -250,28 +250,29 @@ def main():
 
     # Handle the --help-me-im-poor option (no config.ini needed)
     if args.help_me_im_poor:
-        if args.targets:
+        # Use single target if specified, otherwise use targets from file
+        if args.single_target:
+            targets = [args.single_target]
+        elif args.targets:
             targets = process_target_list(args.targets, debug=args.debug)
-
-            # Deduplicate domains (remove subdomains) for DNS
-            deduped_domains = deduplicate_domains([t for t in targets if not is_ip(t, debug=args.debug)], debug=args.debug)
-
-            # Resolve domains for host lookups
-            if args.host:
-                ips = resolve_and_deduplicate_ips(targets, debug=args.debug)
-                if not ips:
-                    print("No valid IPs found to open in Firefox.")
-                    return
-                open_firefox_queries(ips, debug=args.debug)
-            
-            if args.dns:
-                # Open Firefox tabs for DNS queries
-                open_firefox_queries(deduped_domains, debug=args.debug)
-            
-            return  # Exit after opening tabs
         else:
-            print("Error: You must specify a target file for the --help-me-im-poor option.")
+            print("Error: You must specify either a target file or a single target for the --help-me-im-poor option.")
             return
+
+        # Deduplicate domains (remove subdomains) for DNS if required
+        if args.dns:
+            deduped_domains = deduplicate_domains([t for t in targets if not is_ip(t, debug=args.debug)], debug=args.debug)
+            open_firefox_queries(deduped_domains, debug=args.debug)
+
+        # Resolve domains for host lookups if required
+        if args.host:
+            ips = resolve_and_deduplicate_ips(targets, debug=args.debug)
+            if not ips:
+                print("No valid IPs found to open in Firefox.")
+                return
+            open_firefox_queries(ips, debug=args.debug)
+
+        return  # Exit after opening tabs
 
     # For host or DNS lookups, the config.ini is required
     if args.host or args.dns:
