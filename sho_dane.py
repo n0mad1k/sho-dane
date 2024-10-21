@@ -9,20 +9,40 @@ import subprocess
 import time
 from datetime import datetime
 
+
 # Read API key from config.ini file
 def get_shodan_api_key(config_file='config.ini', debug=False):
     config = configparser.ConfigParser()
+    if not os.path.exists(config_file):
+        raise FileNotFoundError(
+            f"Error: '{config_file}' is required for this operation but was not found.\n"
+            "Please create a 'config.ini' file with the following structure:\n\n"
+            "[shodan]\napi_key=YOUR_SHODAN_API_KEY\n"
+        )
     config.read(config_file)
     if debug:
         print(f"[DEBUG] Reading API key from: {config_file}")
     return config['shodan']['api_key']
 
-# Initialize the Shodan API using the key from config.ini
-API_KEY = get_shodan_api_key()
-api = shodan.Shodan(API_KEY)
 
-# Function to resolve domain names to IP addresses
-def resolve_domains_bulk(domains, debug=False):
+# Extract base domain by stripping subdomains (for DNS lookups)
+def extract_base_domain(domain):
+    parts = domain.split('.')
+    if len(parts) > 2:
+        return '.'.join(parts[-2:])  # Extract base domain (second-level and top-level domain)
+    return domain
+
+
+# Deduplicate domains (for DNS lookups) by removing subdomains
+def deduplicate_domains(domains, debug=False):
+    deduped_domains = set(extract_base_domain(domain) for domain in domains)
+    if debug:
+        print(f"[DEBUG] Deduplicated domains for DNS: {deduped_domains}")
+    return list(deduped_domains)
+
+
+# Resolve and deduplicate IP addresses for host lookups (keep subdomains)
+def resolve_and_deduplicate_ips(domains, debug=False):
     resolved_ips = {}
     for domain in domains:
         try:
@@ -34,12 +54,15 @@ def resolve_domains_bulk(domains, debug=False):
             if debug:
                 print(f"[DEBUG] Could not resolve domain: {domain}")
             resolved_ips[domain] = None
+    # Deduplicate IP addresses
+    unique_ips = set(resolved_ips.values()) - {None}
     if debug:
-        print(f"[DEBUG] Resolved IPs: {resolved_ips}")
-    return resolved_ips
+        print(f"[DEBUG] Deduplicated IPs for Host Lookup: {unique_ips}")
+    return list(unique_ips)
+
 
 # Function to perform DNS lookups for domains
-def shodan_dns_lookups(domains, debug=False):
+def shodan_dns_lookups(domains, api, debug=False):
     results = {}
     success_count = 0
     error_count = 0
@@ -61,10 +84,12 @@ def shodan_dns_lookups(domains, debug=False):
             if debug:
                 print(f"[DEBUG] Error looking up DNS for {domain}: {e}")
             results[domain] = {"Error": str(e)}
+
     return results, success_count, error_count
 
+
 # Function to perform Shodan host lookups for IPs
-def shodan_host_lookups(ips, debug=False):
+def shodan_host_lookups(ips, api, debug=False):
     results = {}
     success_count = 0
     error_count = 0
@@ -102,6 +127,7 @@ def shodan_host_lookups(ips, debug=False):
             results[ip] = {"Error": str(e)}
     return results, success_count, error_count
 
+
 # Read target list from a file
 def process_target_list(file_path, debug=False):
     if debug:
@@ -116,6 +142,7 @@ def process_target_list(file_path, debug=False):
         return []
     return targets
 
+
 # Helper function to check if a target is an IP address
 def is_ip(target, debug=False):
     try:
@@ -128,9 +155,8 @@ def is_ip(target, debug=False):
             print(f"[DEBUG] {target} is not a valid IP address.")
         return False
 
-# Save results to a local directory with separate formatted and JSON output files
+
 # Save results to a local directory with specified output files for host and DNS queries
-# Save results to a local directory with differentiated naming for host and DNS queries
 def save_results_to_directory(results, output_dir, success_count, error_count, is_host_query, is_dns_query, debug=False):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -189,6 +215,7 @@ def save_results_to_directory(results, output_dir, success_count, error_count, i
     if debug:
         print(f"[DEBUG] Results saved to {output_dir} successfully.")
 
+
 # Function to open Firefox with Shodan search queries
 def open_firefox_queries(targets, debug=False):
     for target in targets:
@@ -201,54 +228,58 @@ def open_firefox_queries(targets, debug=False):
         subprocess.Popen(['firefox', query])  # Open Firefox with the query
         time.sleep(2)  # Wait for 2 seconds before opening the next tab
 
+
 # Main function to handle arguments and run appropriate lookups
 def main():
     parser = argparse.ArgumentParser(
-        description='Shodan Search Tool for IPs and Domains.\n\nExample:\n'
+        description='Shodan Search Tool for IPs and Domains.\n\nExample usage:\n'
                     'python shodan_search.py -t targets.txt -o results_dir\n\n'
-                    'The tool performs Shodan lookups for a list of IPs or domains and saves results in specified output directory.',
+                    'This tool performs Shodan lookups for a list of IPs or domains and saves results in the specified output directory.',
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument('-t', '--targets', help='Path to the file containing the list of IPs/domains')
     parser.add_argument('-s', '--single-target', help='Specify a single domain or IP address for lookup')
     parser.add_argument('-H', '--host', action='store_true', help='Perform Shodan host lookups for IP addresses')
     parser.add_argument('-D', '--dns', action='store_true', help='Perform DNS lookups for domains')
-    parser.add_argument('--help-me-im-poor', action='store_true', help='Open Firefox tabs with Shodan queries for each target')
+    parser.add_argument('--help-me-im-poor', action='store_true', help='Open Firefox tabs with Shodan queries for each target without using the API')
     parser.add_argument('-o', '--output', help='Output directory to save the results', default='shodan_results')
     parser.add_argument('--debug', action='store_true', help='Enable debug messages for troubleshooting')
 
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
-    # Handle the --help-me-im-poor option
+    # Handle the --help-me-im-poor option (no config.ini needed)
     if args.help_me_im_poor:
         if args.targets:
             targets = process_target_list(args.targets, debug=args.debug)
-            
-            # Resolve domains to get their IPs
-            resolved_ips = resolve_domains_bulk([t for t in targets if not is_ip(t, debug=args.debug)], debug=args.debug)
 
-            # Combine direct IPs and resolved IPs from domains
-            ips = list(set(resolved_ips.values()))  # Unique IPs from resolved domains
-            ips += [t for t in targets if is_ip(t, debug=args.debug)]  # Add direct IPs
-            ips = list(set(ips))  # Remove duplicates
+            # Deduplicate domains (remove subdomains) for DNS
+            deduped_domains = deduplicate_domains([t for t in targets if not is_ip(t, debug=args.debug)], debug=args.debug)
 
-            # Check if there are no valid IPs before proceeding
-            if not ips:
-                print("No valid IPs found to open in Firefox.")
-                return
-            
-            # Open Firefox tabs with search queries for each target
-            if args.dns:
-                # If -D is passed, we only want to open domain queries
-                open_firefox_queries([t for t in targets if not is_ip(t)], debug=args.debug)
-            elif args.host:
-                # If -H is passed, we want to open host queries
+            # Resolve domains for host lookups
+            if args.host:
+                ips = resolve_and_deduplicate_ips(targets, debug=args.debug)
+                if not ips:
+                    print("No valid IPs found to open in Firefox.")
+                    return
                 open_firefox_queries(ips, debug=args.debug)
+            
+            if args.dns:
+                # Open Firefox tabs for DNS queries
+                open_firefox_queries(deduped_domains, debug=args.debug)
             
             return  # Exit after opening tabs
         else:
             print("Error: You must specify a target file for the --help-me-im-poor option.")
+            return
+
+    # For host or DNS lookups, the config.ini is required
+    if args.host or args.dns:
+        try:
+            API_KEY = get_shodan_api_key(debug=args.debug)
+            api = shodan.Shodan(API_KEY)
+        except FileNotFoundError as e:
+            print(e)
             return
 
     # Process targets
@@ -269,12 +300,8 @@ def main():
     # Host lookups
     if args.host:
         print("[INFO] Performing host lookups...")
-        ips = [t for t in targets if is_ip(t, debug=args.debug)]
-        resolved_domains = [t for t in targets if not is_ip(t, debug=args.debug)]
-        resolved_ips = resolve_domains_bulk(resolved_domains, debug=args.debug)
-        ips.extend(resolved_ips.values())
-        ips = list(set(filter(None, ips)))  # Deduplicate IPs
-        host_results, host_success_count, host_error_count = shodan_host_lookups(ips, debug=args.debug)
+        ips = resolve_and_deduplicate_ips(targets, debug=args.debug)
+        host_results, host_success_count, host_error_count = shodan_host_lookups(ips, api, debug=args.debug)
         results.update(host_results)
         success_count += host_success_count
         error_count += host_error_count
@@ -282,14 +309,15 @@ def main():
     # DNS lookups
     if args.dns:
         print("[INFO] Performing DNS lookups...")
-        domains = [t for t in targets if not is_ip(t, debug=args.debug)]
-        dns_results, dns_success_count, dns_error_count = shodan_dns_lookups(domains, debug=args.debug)
+        deduped_domains = deduplicate_domains([t for t in targets if not is_ip(t, debug=args.debug)], debug=args.debug)
+        dns_results, dns_success_count, dns_error_count = shodan_dns_lookups(deduped_domains, api, debug=args.debug)
         results.update(dns_results)
         success_count += dns_success_count
         error_count += dns_error_count
 
     # Save results
     save_results_to_directory(results, args.output, success_count, error_count, args.host, args.dns, debug=args.debug)
+
 
 # Entry point for the script
 if __name__ == "__main__":
